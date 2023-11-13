@@ -12,6 +12,31 @@
 #define B 0.2
 #define C 3.0
 #define I_APP 1.0
+#define CUDA_CHECK_ERROR() \
+do { \
+    cudaDeviceSynchronize(); \
+    cudaError_t cudaError = cudaGetLastError(); \
+    if (cudaError != cudaSuccess) { \
+        fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(cudaError)); \
+        exit(EXIT_FAILURE); \
+    } \
+} while (0)
+
+
+void printMemoryUsage() {
+    size_t free_mem, total_mem;
+    cudaMemGetInfo(&free_mem, &total_mem);
+
+    double free_gb = static_cast<double>(free_mem) / (1 << 30); // Convert bytes to GB
+    double total_gb = static_cast<double>(total_mem) / (1 << 30);
+
+    printf("Memory usage:\n");
+    printf("Free memory: %.2f GB\n", free_gb);
+    printf("Total memory: %.2f GB\n", total_gb);
+}
+
+
+
 
 // CUDA kernel to simulate FHN cell models
 __global__ void fhn_kernel(float* ui, float* vi,float *ki, float* u_solution, float* v_solution, float* t_solution, float DT, int NUM_CELLS, float T_FINAL, int rate, int N) {
@@ -42,7 +67,7 @@ __global__ void fhn_kernel(float* ui, float* vi,float *ki, float* u_solution, fl
             float v_new = v_i + DT * ((u_i*0.04-0.16*v_i));
 
             // store solution for current time step
-            int ind = idx + N * step;
+            int ind = idx + NUM_CELLS * step;
 
            
            
@@ -98,7 +123,7 @@ int main(int argc, char* argv[]) {
         NUM_CELLS++;
     }
 
-    printf("%d", NUM_CELLS);
+    printf("%d CELLS \n", NUM_CELLS);
 
 
     // allocate memory on host for FHN model variables
@@ -110,7 +135,7 @@ int main(int argc, char* argv[]) {
     float* u_solution = (float*)malloc(sizeof(float) * NUM_CELLS * N);
     float* v_solution = (float*)malloc(sizeof(float) * NUM_CELLS * N);
     float* t_solution = (float*)malloc(sizeof(float) * NUM_CELLS * N);
-
+    printMemoryUsage();
 
     std::ifstream file2("u.csv"); // Assuming the CSV contains u,v,k values
     std::string line;
@@ -143,25 +168,33 @@ int main(int argc, char* argv[]) {
     // allocate memory on device for FHN model variables
     float* u_dev, * v_dev, * t_dev;
     cudaMalloc((void**)&u_dev, sizeof(float) * NUM_CELLS);
+    CUDA_CHECK_ERROR();
     cudaMalloc((void**)&v_dev, sizeof(float) * NUM_CELLS);
+    CUDA_CHECK_ERROR();
     cudaMalloc((void**)&t_dev, sizeof(float) * NUM_CELLS);
-
+    CUDA_CHECK_ERROR();
 
     float* u_solution_dev, * v_solution_dev, * t_solution_dev;
     cudaMalloc((void**)&u_solution_dev, sizeof(float) * NUM_CELLS * N);
+    CUDA_CHECK_ERROR();
     cudaMalloc((void**)&v_solution_dev, sizeof(float) * NUM_CELLS * N);
+    CUDA_CHECK_ERROR();
     cudaMalloc((void**)&t_solution_dev, sizeof(float) * NUM_CELLS * N);
+    CUDA_CHECK_ERROR();
 
     // copy FHN model variables from host to device
     cudaMemcpy(u_dev, u_host, sizeof(float) * NUM_CELLS, cudaMemcpyHostToDevice);
+    CUDA_CHECK_ERROR();
     cudaMemcpy(v_dev, v_host, sizeof(float) * NUM_CELLS, cudaMemcpyHostToDevice);
+    CUDA_CHECK_ERROR();
     cudaMemcpy(t_dev, k_host, sizeof(float) * NUM_CELLS, cudaMemcpyHostToDevice);
-
+    CUDA_CHECK_ERROR();
     // calculate number of CUDA threads and blocks to use
-    int threads_per_block = 256;
+    int threads_per_block = 1024;
     int blocks_per_grid = (NUM_CELLS + threads_per_block - 1) / threads_per_block;
 
-
+    printf("%d block of 1024 threads \n", blocks_per_grid);
+    
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     float allocation_time;
@@ -171,10 +204,10 @@ int main(int argc, char* argv[]) {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
-
+printMemoryUsage();
     // simulate FHN cell models on device using CUDA kernel
     fhn_kernel << <blocks_per_grid, threads_per_block >> > (u_dev, v_dev,t_dev, u_solution_dev, v_solution_dev, t_solution_dev, DT, NUM_CELLS, T_FINAL, rate,N);
-
+    CUDA_CHECK_ERROR();
 
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
@@ -187,9 +220,11 @@ int main(int argc, char* argv[]) {
 
     // copy FHN model variables from device to host
     cudaMemcpy(u_solution, u_solution_dev, sizeof(float) * NUM_CELLS * N, cudaMemcpyDeviceToHost);
+    CUDA_CHECK_ERROR();
     cudaMemcpy(v_solution, v_solution_dev, sizeof(float) * NUM_CELLS * N, cudaMemcpyDeviceToHost);
+    CUDA_CHECK_ERROR();
     cudaMemcpy(t_solution, t_solution_dev, sizeof(float) * NUM_CELLS * N, cudaMemcpyDeviceToHost);
-
+    CUDA_CHECK_ERROR();
     FILE* u_fp, * v_fp, * t_fp,*p_fp;
     u_fp = fopen("outputs/u.csv", "w");
     v_fp = fopen("outputs/v.csv", "w");
@@ -202,7 +237,7 @@ int main(int argc, char* argv[]) {
         fprintf(v_fp, "%f", v_host[i]);
 
         for (int j = 1; j < N; j++) {
-            int ind = i * N + j;
+            int ind = j * NUM_CELLS + i;
             // update FHN model equations for current cell
             float U = u_solution[ind];
             float V = v_solution[ind];
@@ -219,7 +254,7 @@ int main(int argc, char* argv[]) {
     fprintf(t_fp, "%f", t_solution[0]);
 
     for (int i = 1; i < N; i++) {
-        fprintf(t_fp, ", %f ", t_solution[i]);
+        fprintf(t_fp, ", %f ", t_solution[i*NUM_CELLS]);
     }
 
     fclose(t_fp);

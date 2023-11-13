@@ -26,7 +26,7 @@ class FHNCUDA:
             csvreader = csv.reader(csvfile)
             column_count = [len(row) for row in csvreader][0]
 
-        print("Number of rows in the CSV file: ", row_count, column_count)
+        #print("Number of rows in the CSV file: ", row_count, column_count)
         
         return (read_csv_matrix('./outputs/u.csv')) , (read_csv_matrix('./outputs/v.csv')) ,(read_csv_matrix('./outputs/t.csv')),(read_csv_matrix('./outputs/p.csv')) 
 
